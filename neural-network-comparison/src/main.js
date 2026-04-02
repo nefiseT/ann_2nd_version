@@ -1,170 +1,123 @@
 /**
- * Main application orchestration
- * Coordinates dataset generation, model training, and visualization
+ * Main application — coordinates dataset generation, model training, and visualization
  */
 
 const App = {
-    manualNN: null,
-    tfNN: null,
-    dataset: null,
-    trainData: null,
+    modelA: null,
+    modelB: null,
     testData: null,
+    accuracyA: null,
+    accuracyB: null,
 
     init() {
-        console.log('🧠 Neural Network Comparison Tool');
         Controls.init();
-        console.log('✅ Controls initialized');
     },
 
-    /**
-     * Main training function - orchestrates both models
-     */
-    async train(params) {
-        const {
-            datasetSize,
-            learningRate,
-            hiddenSize,
-            epochs
-        } = params;
+    async train({ shared, modelA: cfgA, modelB: cfgB }) {
+        const { datasetSize, noise, epochs } = shared;
 
-        console.log('\n📊 Generating dataset...');
-        // Generate dataset
-        const { data, labels } = Dataset.generateCircle(datasetSize);
+        // Generate shared dataset
+        const { data, labels } = Dataset.generateCircle(datasetSize, 0.6, noise);
         const split = Dataset.split(data, labels, 0.8);
-        
-        this.trainData = split.train;
         this.testData = split.test;
 
-        console.log(`✅ Dataset created: ${datasetSize} samples (${Math.floor(datasetSize * 0.8)} train, ${Math.floor(datasetSize * 0.2)} test)`);
+        // Dispose previous models
+        if (this.modelA) this.modelA.dispose();
+        if (this.modelB) this.modelB.dispose();
 
-        // Initialize models
-        console.log('\n🔧 Initializing models...');
-        this.manualNN = new ManualNN(2, hiddenSize, 1, learningRate);
-        this.tfNN = new TensorFlowNN(2, hiddenSize, 1, learningRate);
-        console.log('✅ Models initialized');
+        // Build models
+        this.modelA = new TensorFlowNN({ inputSize: 2, ...cfgA });
+        this.modelB = new TensorFlowNN({ inputSize: 2, ...cfgB });
 
-        // Train Manual NN
-        console.log('\n🚂 Training Manual Neural Network...');
-        const manualResult = this.manualNN.train(
-            this.trainData.data,
-            this.trainData.labels,
-            epochs,
-            32
-        );
-        console.log(`✅ Manual NN trained in ${manualResult.trainingTime.toFixed(2)}ms`);
+        // Train both sequentially (TF.js shares the GPU context)
+        await this.modelA.train(split.train.data, split.train.labels, epochs, 64);
+        await this.modelB.train(split.train.data, split.train.labels, epochs, 64);
 
-        // Train TensorFlow NN
-        console.log('\n🚂 Training TensorFlow.js Model...');
-        const tfResult = await this.tfNN.train(
-            this.trainData.data,
-            this.trainData.labels,
-            epochs,
-            32
-        );
-        console.log(`✅ TensorFlow.js trained in ${tfResult.trainingTime.toFixed(2)}ms`);
-
-        // Evaluate on test set
-        console.log('\n📈 Evaluating on test set...');
-        this.evaluateModels();
-
-        // Visualize predictions
-        console.log('\n🎨 Visualizing predictions...');
+        this.evaluate();
         this.visualize();
-
-        // Compare results
-        console.log('\n📊 Comparing results...');
-        this.compare();
-
-        console.log('\n✅ Training complete!\n');
+        this.compare(cfgA, cfgB);
     },
 
-    evaluateModels() {
-        // Manual NN evaluation
-        const manualPreds = this.manualNN.predict(this.testData.data);
-        const manualAccuracy = Metrics.accuracy(manualPreds, this.testData.labels);
-        this.manualAccuracy = manualAccuracy;
+    evaluate() {
+        const predsA = this.modelA.predict(this.testData.data);
+        const predsB = this.modelB.predict(this.testData.data);
 
-        console.log(`Manual NN - Accuracy: ${(manualAccuracy * 100).toFixed(2)}%`);
+        this.accuracyA = Metrics.accuracy(predsA, this.testData.labels);
+        this.accuracyB = Metrics.accuracy(predsB, this.testData.labels);
 
-        // TensorFlow NN evaluation
-        const tfPreds = this.tfNN.predict(this.testData.data);
-        const tfAccuracy = Metrics.accuracy(tfPreds, this.testData.labels);
-        this.tfAccuracy = tfAccuracy;
+        document.getElementById('aAccuracy').textContent = `${(this.accuracyA * 100).toFixed(2)}%`;
+        document.getElementById('bAccuracy').textContent = `${(this.accuracyB * 100).toFixed(2)}%`;
 
-        console.log(`TensorFlow.js - Accuracy: ${(tfAccuracy * 100).toFixed(2)}%`);
-
-        // Update UI
-        document.getElementById('manualAccuracy').textContent = `${(manualAccuracy * 100).toFixed(2)}%`;
-        document.getElementById('tfAccuracy').textContent = `${(tfAccuracy * 100).toFixed(2)}%`;
-
-        // Update training stats
-        Controls.updateStats(this.manualNN, 'manual');
-        Controls.updateStats(this.tfNN, 'tensorflow');
+        Controls.updateStats(this.modelA, 'a');
+        Controls.updateStats(this.modelB, 'b');
     },
 
     visualize() {
-        // Get predictions on grid
-        const manualGrid = this.manualNN.predictGrid(50);
-        const tfGrid = this.tfNN.predictGrid(50);
-
-        // Draw on canvas
-        Canvas.draw('canvasManual', manualGrid, this.testData.data, this.testData.labels);
-        Canvas.draw('canvasTensorFlow', tfGrid, this.testData.data, this.testData.labels);
-
-        console.log('✅ Visualizations complete');
+        Canvas.draw('canvasA', this.modelA.predictGrid(50), this.testData.data, this.testData.labels);
+        Canvas.draw('canvasB', this.modelB.predictGrid(50), this.testData.data, this.testData.labels);
     },
 
-    compare() {
-        const manualLoss = this.manualNN.trainingHistory[this.manualNN.trainingHistory.length - 1];
-        const tfLoss = this.tfNN.trainingHistory[this.tfNN.trainingHistory.length - 1];
-        const manualTime = this.manualNN.trainingTime;
-        const tfTime = this.tfNN.trainingTime;
+    compare(cfgA, cfgB) {
+        const lossA = this.modelA.trainingHistory[this.modelA.trainingHistory.length - 1];
+        const lossB = this.modelB.trainingHistory[this.modelB.trainingHistory.length - 1];
+        const timeA = this.modelA.trainingTime;
+        const timeB = this.modelB.trainingTime;
 
-        const speedup = (manualTime / tfTime).toFixed(2);
-        const lossImprovement = ((manualLoss - tfLoss) / manualLoss * 100).toFixed(2);
+        const betterLoss   = lossA  < lossB  ? 'Model A' : lossB  < lossA  ? 'Model B' : 'Tie';
+        const betterAcc    = this.accuracyA > this.accuracyB ? 'Model A' : this.accuracyB > this.accuracyA ? 'Model B' : 'Tie';
+        const fasterModel  = timeA  < timeB  ? 'Model A' : timeB  < timeA  ? 'Model B' : 'Tie';
+        const lossDiff     = Math.abs(lossA - lossB).toFixed(6);
+        const accDiff      = Math.abs(this.accuracyA - this.accuracyB);
 
-        let comparisonHTML = `
+        const fmtLayers = layers => layers.join(' → ');
+
+        document.getElementById('comparisonText').innerHTML = `
             <div class="insight">
-                <strong>📊 Performance Summary</strong><br>
-                Manual NN Loss: ${manualLoss.toFixed(6)} | TensorFlow Loss: ${tfLoss.toFixed(6)}<br>
-                Manual NN Accuracy: ${(this.manualAccuracy * 100).toFixed(2)}% | TensorFlow Accuracy: ${(this.tfAccuracy * 100).toFixed(2)}%<br>
-                Manual NN Time: ${manualTime.toFixed(2)}ms | TensorFlow Time: ${tfTime.toFixed(2)}ms
+                <strong>Model Configurations</strong><br>
+                <table style="width:100%;border-collapse:collapse;margin-top:8px;font-size:0.88em;">
+                    <tr style="color:#94a3b8;">
+                        <th style="text-align:left;padding:4px 8px;">Setting</th>
+                        <th style="text-align:left;padding:4px 8px;">Model A</th>
+                        <th style="text-align:left;padding:4px 8px;">Model B</th>
+                    </tr>
+                    <tr><td style="padding:4px 8px;">Optimizer</td><td style="padding:4px 8px;">${cfgA.optimizer}</td><td style="padding:4px 8px;">${cfgB.optimizer}</td></tr>
+                    <tr><td style="padding:4px 8px;">Learning Rate</td><td style="padding:4px 8px;">${cfgA.learningRate}</td><td style="padding:4px 8px;">${cfgB.learningRate}</td></tr>
+                    <tr><td style="padding:4px 8px;">Activation</td><td style="padding:4px 8px;">${cfgA.activation}</td><td style="padding:4px 8px;">${cfgB.activation}</td></tr>
+                    <tr><td style="padding:4px 8px;">Hidden Layers</td><td style="padding:4px 8px;">${fmtLayers(cfgA.hiddenLayers)}</td><td style="padding:4px 8px;">${fmtLayers(cfgB.hiddenLayers)}</td></tr>
+                </table>
             </div>
 
             <div class="insight">
-                <strong>⚡ Efficiency Analysis</strong><br>
-                TensorFlow.js is <strong>${speedup}x faster</strong> than the manual implementation.<br>
-                ${tfLoss < manualLoss ? 
-                    `TensorFlow achieved <strong>${lossImprovement}%</strong> lower loss.` :
-                    `Manual NN achieved <strong>${Math.abs(lossImprovement)}%</strong> lower loss.`
-                }
-            </div>
-
-            <div class="insight">
-                <strong>💡 Why the difference?</strong><br>
-                <ul style="margin-left: 20px;">
-                    <li><strong>Speed:</strong> TensorFlow.js uses optimized WebGL/WASM backends vs pure JS loops</li>
-                    <li><strong>Accuracy:</strong> TensorFlow uses Adam optimizer (adaptive learning) vs vanilla SGD</li>
-                    <li><strong>Code:</strong> Manual NN demonstrates core concepts; TensorFlow is production-ready</li>
-                </ul>
-            </div>
-
-            <div class="insight">
-                <strong>🎯 Key Takeaways</strong><br>
-                <ul style="margin-left: 20px;">
-                    <li>Both models learn the circle boundary successfully</li>
-                    <li>TensorFlow.js abstracts away low-level optimization details</li>
-                    <li>Manual implementation is educational but slower for real applications</li>
-                    <li>For production: use libraries; for learning: implement from scratch</li>
-                </ul>
+                <strong>Performance Summary</strong><br>
+                <table style="width:100%;border-collapse:collapse;margin-top:8px;font-size:0.88em;">
+                    <tr style="color:#94a3b8;">
+                        <th style="text-align:left;padding:4px 8px;">Metric</th>
+                        <th style="text-align:left;padding:4px 8px;">Model A</th>
+                        <th style="text-align:left;padding:4px 8px;">Model B</th>
+                        <th style="text-align:left;padding:4px 8px;">Winner</th>
+                    </tr>
+                    <tr>
+                        <td style="padding:4px 8px;">Final Loss</td>
+                        <td style="padding:4px 8px;color:${lossA <= lossB ? '#10b981' : '#f87171'}">${lossA.toFixed(6)}</td>
+                        <td style="padding:4px 8px;color:${lossB <= lossA ? '#10b981' : '#f87171'}">${lossB.toFixed(6)}</td>
+                        <td style="padding:4px 8px;">${betterLoss} ${betterLoss !== 'Tie' ? `(−${lossDiff})` : ''}</td>
+                    </tr>
+                    <tr>
+                        <td style="padding:4px 8px;">Accuracy</td>
+                        <td style="padding:4px 8px;color:${this.accuracyA >= this.accuracyB ? '#10b981' : '#f87171'}">${(this.accuracyA * 100).toFixed(2)}%</td>
+                        <td style="padding:4px 8px;color:${this.accuracyB >= this.accuracyA ? '#10b981' : '#f87171'}">${(this.accuracyB * 100).toFixed(2)}%</td>
+                        <td style="padding:4px 8px;">${betterAcc} ${betterAcc !== 'Tie' ? `(+${(accDiff * 100).toFixed(2)}%)` : ''}</td>
+                    </tr>
+                    <tr>
+                        <td style="padding:4px 8px;">Training Time</td>
+                        <td style="padding:4px 8px;color:${timeA <= timeB ? '#10b981' : '#f87171'}">${timeA.toFixed(0)}ms</td>
+                        <td style="padding:4px 8px;color:${timeB <= timeA ? '#10b981' : '#f87171'}">${timeB.toFixed(0)}ms</td>
+                        <td style="padding:4px 8px;">${fasterModel}</td>
+                    </tr>
+                </table>
             </div>
         `;
-
-        document.getElementById('comparisonText').innerHTML = comparisonHTML;
     }
 };
 
-// Initialize app when DOM is ready
-document.addEventListener('DOMContentLoaded', () => {
-    App.init();
-});
+document.addEventListener('DOMContentLoaded', () => App.init());
